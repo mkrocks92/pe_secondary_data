@@ -1,0 +1,43 @@
+
+version: 2
+
+models:
+  - name: stg_fund_data
+    description: "Staged fund-level transaction data. Casts types, converts dates, standardises country names, and renames sector to fund strategy."
+    columns:
+      - name: fund_name
+        description: "Name of the fund."
+        tests:
+          - not_null
+      - name: fund_size
+        description: "Total size of the fund raised by the GP."
+        tests:
+          - not_null
+      - name: transaction_type
+        description: "Type of transaction."
+        tests:
+          - not_null
+      - name: transaction_index
+        description: "Restatement version for this fund, type and date."
+        tests:
+          - not_null
+      - name: transaction_date
+        description: "Date the transaction relates to."
+        tests:
+          - not_null
+      - name: transaction_amount
+        description: "Transaction amount in the fund's currency."
+        tests:
+          - not_null
+
+  - name: stg_company_data
+    description: "Staged company-level transaction data. Casts types, converts dates, and standardises country, region and sector."
+    columns:
+      - name: fund_name
+        description: "Name of the fund holding the company."
+        tests:
+          - not_null
+      - name: company_id
+        description: "Source company identifier."
+        tests:
+          - not_null

@@ -1,0 +1,9 @@
+version: 2
+
+sources:
+  - name: pe_secondary_data
+    database: db_secondaries_cvc
+    schema: raw
+    tables:
+      - name: fund_data
+      - name: company_data

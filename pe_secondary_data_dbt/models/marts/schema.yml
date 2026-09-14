@@ -1,0 +1,369 @@
+version: 2
+
+models:
+  - name: dim_date
+    description: "Conformed calendar dimension, one row per day. The spine is derived from the min and max transaction dates across both staging models, padded to whole calendar years."
+    columns:
+      - name: date_key
+        description: "Primary key, YYYYMMDD as an integer. Joins to transaction_date_key on the fact tables."
+        tests:
+          - unique
+          - not_null
+      - name: calendar_date
+        description: "The date itself."
+        tests:
+          - unique
+          - not_null
+      - name: calendar_quarter_label
+        description: "Quarter label, e.g. 2021-Q4."
+        tests:
+          - not_null
+      - name: is_quarter_end
+        description: "True on the last day of a calendar quarter. Valuations are reported at quarter end, so this is the primary filter for NAV analysis."
+        tests:
+          - not_null
+      - name: is_month_end
+        description: "True on the last day of a calendar month."
+        tests:
+          - not_null
+      - name: is_year_end
+        description: "True on the last day of a calendar year."
+        tests:
+          - not_null
+
+  - name: dim_fund
+    description: "One row per fund. Conformed fund dimension holding fund size, strategy, domicile and the investor's commitment."
+    columns:
+      - name: fund_key
+        description: "Surrogate key hashed from fund_name."
+        tests:
+          - unique
+          - not_null
+      - name: fund_name
+        description: "Natural key: name of the fund."
+        tests:
+          - unique
+          - not_null
+      - name: fund_size
+        description: "Total size of the fund raised by the GP."
+      - name: fund_strategy
+        description: "Fund strategy, e.g. Private Equity or Venture Capital. Sourced from the fund_data sector column."
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['Private Equity', 'Venture Capital']
+      - name: commitment_amount
+        description: "The investor's committed capital to the fund. Distinct from fund_size."
+      - name: ownership_pct
+        description: "CVC's CURRENT ownership: total commitments / fund_size. Valid as at the latest extract only. For any dated calculation use the point-in-time ownership_pct in fct_company_nav, which counts only commitments up to the valuation date."
+        tests:
+          - not_null
+      - name: country
+        description: "Fund domicile, standardised (USA mapped to United States)."
+      - name: region
+        description: "Fund region."
+
+  - name: dim_company
+    description: "One row per portfolio company, conformed across funds. A company can be held by more than one fund, so the holding relationship lives in fct_company_valuations."
+    columns:
+      - name: company_key
+        description: "Surrogate key hashed from company_id."
+        tests:
+          - unique
+          - not_null
+      - name: company_id
+        description: "Natural key: source company identifier."
+        tests:
+          - unique
+          - not_null
+      - name: company_name
+        description: "Company name."
+        tests:
+          - not_null
+      - name: sector
+        description: "GICS-style industry sector. Null for the Other Assets plug."
+      - name: is_other_assets
+        description: "True for the Other Assets balancing plug, which is not a real portfolio company."
+        tests:
+          - not_null
+      - name: holding_fund_count
+        description: "Number of distinct funds holding this company."
+
+  - name: fct_company_nav_implied
+    description: "Company NAV using IMPLIED ownership (method 2): fund NAV on the date / sum of that fund's company valuations on the same date. Restricted to dates having both a fund NAV and company valuations. Note ownership_pct here is a plug that forces reconciliation, not a true ownership stake."
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - fund_name
+              - company_id
+              - report_date
+    columns:
+      - name: company_nav_key
+        description: "Surrogate key hashed from fund_name, company_id and report_date."
+        tests:
+          - unique
+          - not_null
+      - name: fund_key
+        description: "Foreign key to dim_fund."
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_fund')
+                field: fund_key
+      - name: company_key
+        description: "Foreign key to dim_company."
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_company')
+                field: company_key
+      - name: report_date_key
+        description: "Foreign key to dim_date."
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_key
+      - name: fund_nav
+        description: "The fund's NAV on report_date, the numerator of the implied ratio."
+        tests:
+          - not_null
+      - name: total_company_valuation
+        description: "Sum of all the fund's company valuations on report_date, the denominator of the implied ratio. Includes the Other Assets plug."
+        tests:
+          - not_null
+      - name: ownership_pct
+        description: "fund_nav / total_company_valuation. A backsolved plug rather than a true ownership percentage: it absorbs fund-level fees, cash, timing lags and any stale fund_size, then spreads them pro rata across companies."
+        tests:
+          - not_null
+      - name: cvc_company_nav
+        description: "ownership_pct * company_valuation. Sums to fund_nav per fund and date BY CONSTRUCTION, so this model cannot surface a reconciliation break."
+        tests:
+          - not_null
+
+  - name: fct_company_nav
+    description: "CVC's look-through NAV per portfolio company over time, using COMMITMENT-BASED ownership (method 1): cumulative commitments dated on or before the valuation date / fund_size. Derived independently of fund NAV, so its variance against fund NAV is diagnostic."
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - fund_name
+              - company_id
+              - report_date
+    columns:
+      - name: company_nav_key
+        description: "Surrogate key hashed from fund_name, company_id and report_date."
+        tests:
+          - unique
+          - not_null
+      - name: fund_key
+        description: "Foreign key to dim_fund."
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_fund')
+                field: fund_key
+      - name: company_key
+        description: "Foreign key to dim_company."
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_company')
+                field: company_key
+      - name: report_date_key
+        description: "Foreign key to dim_date."
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_key
+      - name: report_date
+        description: "Valuation date the NAV is reported as at."
+        tests:
+          - not_null
+      - name: cumulative_commitment_amount
+        description: "Sum of CVC's Commitment transactions dated on or before report_date. Zero where the valuation predates every commitment."
+        tests:
+          - not_null
+      - name: fund_size
+        description: "Latest size of the fund, used as the ownership denominator. Not the fund size as at report_date."
+        tests:
+          - not_null
+      - name: ownership_pct
+        description: "cumulative_commitment_amount / fund_size, as at report_date."
+        tests:
+          - not_null
+      - name: company_valuation
+        description: "Gross company valuation at 100% of the holding fund. Not additive across funds."
+        tests:
+          - not_null
+      - name: cvc_company_nav
+        description: "ownership_pct * company_valuation. CVC's share, additive across funds and companies within a date but never across dates."
+        tests:
+          - not_null
+      - name: is_pre_commitment_valuation
+        description: "True where the valuation predates every commitment, so ownership is 0% and cvc_company_nav is 0. Not a genuine zero valuation; see the model header."
+        tests:
+          - not_null
+
+  - name: fct_fund_nav
+    description: "Fund NAV over time: the most recent valuation plus all calls and distributions booked since it. One row per fund per date with valuation or cashflow activity. Verified to match the user's Excel figures exactly (see tests/assert_fund_nav_matches_expected.sql)."
+    columns:
+      - name: fund_nav_key
+        description: "Surrogate key hashed from fund_name and report_date."
+        tests:
+          - unique
+          - not_null
+      - name: fund_key
+        description: "Foreign key to dim_fund."
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_fund')
+                field: fund_key
+      - name: report_date_key
+        description: "Foreign key to dim_date."
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_key
+      - name: report_date
+        description: "The date the NAV is reported as at."
+        tests:
+          - not_null
+      - name: valuation_date
+        description: "Date of the valuation the NAV is anchored on. Equals report_date on valuation dates, and is earlier on cashflow-only dates."
+        tests:
+          - not_null
+      - name: valuation_amount
+        description: "The anchor valuation carried forward."
+        tests:
+          - not_null
+      - name: cashflows_since_valuation
+        description: "Net calls and distributions booked after valuation_date up to report_date. Zero on valuation dates."
+        tests:
+          - not_null
+      - name: nav
+        description: "valuation_amount + cashflows_since_valuation."
+        tests:
+          - not_null
+
+  - name: fct_fund_transaction
+    description: "One row per fund transaction (commitment, call, distribution, valuation), including restatements. Filter on is_latest_restatement for currently reported figures."
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - fund_name
+              - transaction_type
+              - transaction_date
+              - transaction_index
+    columns:
+      - name: fund_transaction_key
+        description: "Surrogate key for the transaction grain."
+        tests:
+          - unique
+          - not_null
+      - name: fund_key
+        description: "Foreign key to dim_fund."
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_fund')
+                field: fund_key
+      - name: transaction_date_key
+        description: "Foreign key to dim_date."
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_key
+      - name: transaction_type
+        description: "Type of transaction."
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['Commitment', 'Call', 'Distribution', 'Valuation']
+      - name: transaction_index
+        description: "Restatement version. The highest index for a given fund, type and date is the currently reported figure."
+        tests:
+          - not_null
+      - name: is_latest_restatement
+        description: "True when this row is the current figure for its fund, type and date."
+        tests:
+          - not_null
+      - name: transaction_date
+        description: "Date the transaction relates to."
+        tests:
+          - not_null
+      - name: reported_nav
+        description: "Transaction amount where the type is Valuation. A balance, so never sum across dates."
+
+  - name: fct_company_valuations
+    description: "One row per company-level transaction, including restatements. Source data only carries Valuation rows."
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - fund_name
+              - company_id
+              - transaction_type
+              - transaction_date
+              - transaction_index
+    columns:
+      - name: company_transaction_key
+        description: "Surrogate key for the transaction grain."
+        tests:
+          - unique
+          - not_null
+      - name: fund_key
+        description: "Foreign key to dim_fund."
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_fund')
+                field: fund_key
+      - name: company_key
+        description: "Foreign key to dim_company."
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_company')
+                field: company_key
+      - name: transaction_date_key
+        description: "Foreign key to dim_date."
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_key
+      - name: transaction_type
+        description: "Type of transaction."
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['Valuation']
+      - name: is_latest_restatement
+        description: "True when this row is the current figure for its fund, company, type and date."
+        tests:
+          - not_null
+      - name: gross_holding_value
+        description: "The holding fund's stake in the company at 100% of the fund, not CVC's share. Never sum this across funds. Ownership scaling lives in fct_company_nav."
+      - name: reported_value
+        description: "Holding value where the type is Valuation. Additive across companies within a date, not across dates."
